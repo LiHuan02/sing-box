@@ -30,8 +30,7 @@ type LocalRuleSet struct {
 	logger     logger.Logger
 	tag        string
 	access     sync.RWMutex
-	rules      []adapter.HeadlessRule
-	metadata   adapter.RuleSetMetadata
+	snapshot   atomic.Pointer[ruleSetSnapshot]
 	fileFormat string
 	watcher    *fswatch.Watcher
 	callbacks  list.List[adapter.RuleSetUpdateCallback]
@@ -82,7 +81,7 @@ func (s *LocalRuleSet) Name() string {
 }
 
 func (s *LocalRuleSet) String() string {
-	return strings.Join(F.MapToString(s.rules), " ")
+	return strings.Join(F.MapToString(loadRuleSetSnapshot(&s.snapshot).rules), " ")
 }
 
 func (s *LocalRuleSet) StartContext(ctx context.Context, startContext *adapter.HTTPStartContext) error {
@@ -141,9 +140,8 @@ func (s *LocalRuleSet) reloadRules(headlessRules []option.HeadlessRule) error {
 	if err != nil {
 		return err
 	}
+	s.snapshot.Store(&ruleSetSnapshot{rules: rules, metadata: metadata})
 	s.access.Lock()
-	s.rules = rules
-	s.metadata = metadata
 	callbacks := s.callbacks.Array()
 	s.access.Unlock()
 	for _, callback := range callbacks {
@@ -153,15 +151,11 @@ func (s *LocalRuleSet) reloadRules(headlessRules []option.HeadlessRule) error {
 }
 
 func (s *LocalRuleSet) Metadata() adapter.RuleSetMetadata {
-	s.access.RLock()
-	defer s.access.RUnlock()
-	return s.metadata
+	return loadRuleSetSnapshot(&s.snapshot).metadata
 }
 
 func (s *LocalRuleSet) ExtractIPSet() []*netipx.IPSet {
-	s.access.RLock()
-	defer s.access.RUnlock()
-	return common.FlatMap(s.rules, extractIPSetFromRule)
+	return common.FlatMap(loadRuleSetSnapshot(&s.snapshot).rules, extractIPSetFromRule)
 }
 
 func (s *LocalRuleSet) IncRef() {
@@ -176,7 +170,7 @@ func (s *LocalRuleSet) DecRef() {
 
 func (s *LocalRuleSet) Cleanup() {
 	if s.refs.Load() == 0 {
-		s.rules = nil
+		s.snapshot.Store(emptyRuleSetSnapshot)
 	}
 }
 
@@ -193,14 +187,14 @@ func (s *LocalRuleSet) UnregisterCallback(element *list.Element[adapter.RuleSetU
 }
 
 func (s *LocalRuleSet) Close() error {
-	s.rules = nil
+	s.snapshot.Store(emptyRuleSetSnapshot)
 	return common.Close(common.PtrOrNil(s.watcher))
 }
 
 func (s *LocalRuleSet) Match(metadata *adapter.InboundContext) bool {
-	return matchAnyHeadlessRule(s.rules, metadata)
+	return matchAnyHeadlessRule(loadRuleSetSnapshot(&s.snapshot).rules, metadata)
 }
 
 func (s *LocalRuleSet) mergeableRule() *DefaultHeadlessRule {
-	return mergeableRuleIn(s.rules)
+	return mergeableRuleIn(loadRuleSetSnapshot(&s.snapshot).rules)
 }

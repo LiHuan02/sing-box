@@ -3,6 +3,7 @@ package rule
 import (
 	"context"
 	"reflect"
+	"sync/atomic"
 
 	"github.com/sagernet/sing-box/adapter"
 	C "github.com/sagernet/sing-box/constant"
@@ -14,6 +15,27 @@ import (
 
 	"go4.org/netipx"
 )
+
+var emptyRuleSetSnapshot = &ruleSetSnapshot{}
+
+// ruleSetSnapshot is an immutable, atomically published view of a rule-set's
+// rules and metadata. Writers build a complete snapshot and swap it in with
+// a single atomic store; readers load the pointer once and observe a
+// consistent rules/metadata pair, so matching never observes a torn slice
+// header or rules from one generation with metadata from another.
+type ruleSetSnapshot struct {
+	rules    []adapter.HeadlessRule
+	metadata adapter.RuleSetMetadata
+}
+
+// loadRuleSetSnapshot returns the current snapshot, or an empty one if the
+// rule-set has not loaded any rules yet.
+func loadRuleSetSnapshot(snapshot *atomic.Pointer[ruleSetSnapshot]) *ruleSetSnapshot {
+	if loaded := snapshot.Load(); loaded != nil {
+		return loaded
+	}
+	return emptyRuleSetSnapshot
+}
 
 func NewRuleSet(ctx context.Context, logger logger.ContextLogger, tag string, options option.RuleSet) (adapter.RuleSet, error) {
 	switch options.Type {
